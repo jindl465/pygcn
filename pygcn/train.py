@@ -12,6 +12,8 @@ import torch.optim as optim
 from pygcn.utils import load_data, accuracy
 from pygcn.models import GCN
 
+import json
+
 # Training settings
 parser = argparse.ArgumentParser()
 parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -38,8 +40,17 @@ torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
+print("start")
+
 # Load data
-adj, features, labels, idx_train, idx_val, idx_test = load_data()
+graph = np.load("D:/data/graph/graph_save.npy")
+# Load data
+node = torch.load("D:/data/node/node.pt")
+with open("D:/data/node/nodelist.json", 'r') as fp:
+    node_list = json.load(fp)
+print("Data Load")
+
+adj, features, labels, idx_train, idx_val, idx_test = load_data(graph[0], node, node_list)
 
 # Model and optimizer
 model = GCN(nfeat=features.shape[1],

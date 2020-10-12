@@ -1,7 +1,5 @@
 import math
-
 import torch
-
 from torch.nn.parameter import Parameter
 from torch.nn.modules.module import Module
 
@@ -24,13 +22,14 @@ class GraphConvolution(Module):
 
     def reset_parameters(self):
         stdv = 1. / math.sqrt(self.weight.size(1))
+        # print('stdv', stdv)
         self.weight.data.uniform_(-stdv, stdv)
         if self.bias is not None:
             self.bias.data.uniform_(-stdv, stdv)
 
     def forward(self, input, adj):
-        support = torch.mm(input, self.weight)
-        output = torch.spmm(adj, support)
+        support = torch.matmul(input, self.weight)  # input : [B, 1000, 3], weight = [3, next features = 32]
+        output = torch.matmul(adj, support)  # adj : [B, 1000, 1000], supprot : [B, 1000, next_features]
         if self.bias is not None:
             return output + self.bias
         else:
@@ -40,3 +39,13 @@ class GraphConvolution(Module):
         return self.__class__.__name__ + ' (' \
                + str(self.in_features) + ' -> ' \
                + str(self.out_features) + ')'
+
+
+if __name__ == '__main__':
+    graph = torch.randn([3, 1000, 20])
+    adj = torch.randn([3, 1000, 1000])
+    model = GraphConvolution(20, 3)
+    print(model(graph, adj).size())
+
+
+

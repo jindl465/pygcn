@@ -1,6 +1,9 @@
 import numpy as np
 import scipy.sparse as sp
 import torch
+import torch.nn as nn
+from sentence_transformers import SentenceTransformer
+import Resnet_18
 
 
 def encode_onehot(labels):
@@ -11,46 +14,75 @@ def encode_onehot(labels):
                              dtype=np.int32)
     return labels_onehot
 
+def make_fc_1d(f_in, f_out):
+    return nn.Sequential(nn.Linear(f_in, f_out),
+                         nn.ReLU(inplace=True))
 
-def load_data(path="../data/cora/", dataset="cora"):
+class EmbedBranch(nn.Module):
+    def __init__(self, feat_dim, embedding_dim):
+        super(EmbedBranch, self).__init__()
+        self.fc1 = make_fc_1d(feat_dim, embedding_dim)
+        self.fc2 = nn.Linear(embedding_dim, embedding_dim)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.fc2(x)
+        return x
+
+text_model = SentenceTransformer('distilbert-base-nli-mean-tokens')
+
+def text_embedding(sentences):
+    sentence_embeddings = text_model.encode(sentences)
+    return sentence_embeddings
+
+text_feature_dim = 768
+dim_embed = 64
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+image_model = Resnet_18.resnet18(pretrained=True, embedding_size=dim_embed)
+image_model = image_model.to(device)
+text_branch = EmbedBranch(text_feature_dim, dim_embed)
+text_branch = text_branch.to(device)
+
+def load_data(graph, node, node_list):
     """Load citation network dataset (cora only for now)"""
-    print('Loading {} dataset...'.format(dataset))
 
-    idx_features_labels = np.genfromtxt("{}{}.content".format(path, dataset),
-                                        dtype=np.dtype(str))
-    features = sp.csr_matrix(idx_features_labels[:, 1:-1], dtype=np.float32)
-    labels = encode_onehot(idx_features_labels[:, -1])
+    print('Loading dataset...')
+
+    # idx_features_labels = np.genfromtxt("{}{}.content".format(path, dataset), dtype=np.dtype(str))
+    features = makeFeature(node, graph, image_model, text_branch)
+    # features = sp.csr_matrix(pre_features)
 
     # build graph
-    idx = np.array(idx_features_labels[:, 0], dtype=np.int32)
-    idx_map = {j: i for i, j in enumerate(idx)}
-    edges_unordered = np.genfromtxt("{}{}.cites".format(path, dataset),
-                                    dtype=np.int32)
-    edges = np.array(list(map(idx_map.get, edges_unordered.flatten())),
-                     dtype=np.int32).reshape(edges_unordered.shape)
-    adj = sp.coo_matrix((np.ones(edges.shape[0]), (edges[:, 0], edges[:, 1])),
-                        shape=(labels.shape[0], labels.shape[0]),
-                        dtype=np.float32)
+    # idx = np.array(idx_features_labels[:, 0], dtype=np.int32)
+    # idx_map = {j: i for i, j in enumerate(graph)}
+    # edge = [[graph[0], graph[1]], [graph[1], graph[2]], [graph[1], graph[3]], [graph[2], graph[4]],
+    #         [graph[2], graph[5]], [graph[3], graph[6]], [graph[3], graph[7]], [graph[3], graph[8]],
+    #         [graph[1], graph[0]], [graph[2], graph[1]], [graph[3], graph[1]], [graph[4], graph[2]],
+    #         [graph[5], graph[2]], [graph[6], graph[3]], [graph[7], graph[3]], [graph[8], graph[3]]]
+    # edges = [[graph[0], graph[1]], [graph[1], graph[2]], [graph[1], graph[3]], [graph[2], graph[4]],
+    #          [graph[2], graph[5]], [graph[3], graph[6]], [graph[3], graph[7]], [graph[3], graph[8]]]
 
-    # build symmetric adjacency matrix
-    adj = adj + adj.T.multiply(adj.T > adj) - adj.multiply(adj.T > adj)
+    # adj = sp.coo_matrix((np.ones(edges.shape[0]), (edges[:, 0], edges[:, 1])),
+    #                     shape=(labels.shape[0], labels.shape[0]),
+    #                     dtype=np.float32)
+    #
+    # # build symmetric adjacency matrix
+    # adj = adj + adj.T.multiply(adj.T > adj) - adj.multiply(adj.T > adj)
+
+    adj = [[0, 1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 1, 1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 1, 1, 0, 0, 0],
+           [0, 1, 0, 0, 0, 0, 1, 1, 1], [0, 0, 1, 0, 0, 0, 0, 0, 0],
+           [0, 0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0, 0, 0],
+           [0, 0, 0, 1, 0, 0, 0, 0, 0]]
 
     features = normalize(features)
     adj = normalize(adj + sp.eye(adj.shape[0]))
 
-    idx_train = range(140)
-    idx_val = range(200, 500)
-    idx_test = range(500, 1500)
-
     features = torch.FloatTensor(np.array(features.todense()))
-    labels = torch.LongTensor(np.where(labels)[1])
     adj = sparse_mx_to_torch_sparse_tensor(adj)
 
-    idx_train = torch.LongTensor(idx_train)
-    idx_val = torch.LongTensor(idx_val)
-    idx_test = torch.LongTensor(idx_test)
-
-    return adj, features, labels, idx_train, idx_val, idx_test
+    return adj, features
 
 
 def normalize(mx):
@@ -78,3 +110,19 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     values = torch.from_numpy(sparse_mx.data)
     shape = torch.Size(sparse_mx.shape)
     return torch.sparse.FloatTensor(indices, values, shape)
+
+
+def makeFeature(node, graph, image_model, text_branch):
+    output = []
+    for id in graph:
+        idx = str(id)
+        img_em = image_model(node[idx]["img"].cuda())
+        b_desc = torch.tensor(text_embedding(node[idx]["desc"])).cuda()
+        desc_em = text_branch(b_desc)
+
+        feature = torch.cat((img_em, desc_em),dim=1)
+        output.append(feature)
+
+    features = torch.cat(output, dim=0)
+
+    return features
